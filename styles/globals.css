@@ -37,6 +37,15 @@ select {
     font: inherit;
 }
 
+input {
+    width: 100%;
+    border-radius: 16px;
+    border: 1px solid var(--line);
+    padding: 14px 16px;
+    background: var(--panel-strong);
+    color: var(--text);
+}
+
 button {
     cursor: pointer;
 }
@@ -106,6 +115,20 @@ h1 {
 .notice-text {
     color: var(--muted);
     margin-bottom: 0;
+}
+
+.auth-box {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.auth-summary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
 }
 
 .hero-stats {
