@@ -12,7 +12,15 @@ import {
     type Task
 } from "../lib/task-model";
 import {
-    createFallbackTaskRepository,
+    ensureUserProfile,
+    getCurrentSession,
+    hasSupabaseAuth,
+    onAuthStateChanged,
+    signInWithMagicLink,
+    signOut,
+    type UserProfile
+} from "../services/auth-service";
+import {
     createTaskRepository,
     type RepositoryMode,
     type TaskRepository
@@ -20,13 +28,17 @@ import {
 
 const defaultTemplateId = templates[0]?.id ?? "";
 const defaultAssigneeId = members.find((member) => member.role === "cleaner")?.id ?? "";
-const ROLE_KEY = "cleanops.activeRole.v1";
-const MEMBER_KEY = "cleanops.activeMemberId.v1";
 
 export default function Home() {
     const [repository, setRepository] = useState<TaskRepository>(() => createTaskRepository());
-    const [activeRole, setActiveRole] = useState<Role>("admin");
-    const [activeMemberId, setActiveMemberId] = useState("u1");
+    const [activeRole, setActiveRole] = useState<Role>("cleaner");
+    const [activeMemberId, setActiveMemberId] = useState(defaultAssigneeId || "u3");
+    const [profile, setProfile] = useState<UserProfile | null>(null);
+    const [authEmail, setAuthEmail] = useState("");
+    const [authPending, setAuthPending] = useState(false);
+    const [authReady, setAuthReady] = useState(false);
+    const [isAuthenticated, setIsAuthenticated] = useState(false);
+    const [supabaseAuthEnabled] = useState(() => hasSupabaseAuth());
     const [selectedTemplateId, setSelectedTemplateId] = useState(defaultTemplateId);
     const [selectedAssigneeIds, setSelectedAssigneeIds] = useState<string[]>(
         defaultAssigneeId ? [defaultAssigneeId] : []
@@ -56,38 +68,86 @@ export default function Home() {
     }, [visibleTasks]);
 
     useEffect(() => {
-        if (typeof window === "undefined") {
+        if (!supabaseAuthEnabled) {
+            setAuthReady(true);
+            setIsAuthenticated(true);
+            setActiveRole("admin");
+            setActiveMemberId("u1");
+            setNotice("Supabase auth is not configured. Running in demo admin mode.");
             return;
         }
 
-        const savedRole = window.localStorage.getItem(ROLE_KEY) as Role | null;
-        const savedMemberId = window.localStorage.getItem(MEMBER_KEY);
+        let active = true;
+        const fallbackMemberId = defaultAssigneeId || "u3";
 
-        if (savedRole && ["admin", "supervisor", "cleaner"].includes(savedRole)) {
-            setActiveRole(savedRole);
-            const roleMembers = members.filter((member) => member.role === savedRole);
-            const fallbackMember = roleMembers[0]?.id ?? "u1";
-            setActiveMemberId(savedMemberId && roleMembers.some((member) => member.id === savedMemberId) ? savedMemberId : fallbackMember);
-            return;
-        }
+        const syncSession = async () => {
+            try {
+                const session = await getCurrentSession();
 
-        setActiveRole("admin");
-        setActiveMemberId("u1");
-    }, []);
+                if (!active) {
+                    return;
+                }
 
-    useEffect(() => {
-        if (typeof window === "undefined") {
-            return;
-        }
+                if (!session?.user) {
+                    setIsAuthenticated(false);
+                    setProfile(null);
+                    setNotice("Sign in with your work email to load tasks.");
+                    return;
+                }
 
-        window.localStorage.setItem(ROLE_KEY, activeRole);
-        window.localStorage.setItem(MEMBER_KEY, activeMemberId);
-    }, [activeRole, activeMemberId]);
+                const userProfile = await ensureUserProfile(session.user, fallbackMemberId);
+                if (!active) {
+                    return;
+                }
+
+                setProfile(userProfile);
+                setIsAuthenticated(true);
+                setActiveRole(userProfile.role);
+                setActiveMemberId(userProfile.memberId || fallbackMemberId);
+                setNotice(`Signed in as ${userProfile.displayName} (${roleLabel(userProfile.role)}).`);
+            } catch {
+                if (!active) {
+                    return;
+                }
+
+                setIsAuthenticated(false);
+                setProfile(null);
+                setNotice("Could not verify your session. Please sign in again.");
+            } finally {
+                if (active) {
+                    setAuthReady(true);
+                }
+            }
+        };
+
+        void syncSession();
+
+        const unsubscribe = onAuthStateChanged(() => {
+            void syncSession();
+        });
+
+        return () => {
+            active = false;
+            if (unsubscribe) {
+                unsubscribe();
+            }
+        };
+    }, [supabaseAuthEnabled]);
 
     useEffect(() => {
         let active = true;
 
         const loadTasks = async () => {
+            if (!authReady) {
+                return;
+            }
+
+            if (supabaseAuthEnabled && !isAuthenticated) {
+                setLoadingTasks(false);
+                setTasks([]);
+                return;
+            }
+
             setLoadingTasks(true);
 
             try {
@@ -109,18 +169,8 @@ export default function Home() {
                     setNotice(repository.mode === "supabase" ? "Connected to Supabase storage." : "Using browser local storage.");
                 }
             } catch {
-                if (repository.mode === "supabase") {
-                    const fallback = createFallbackTaskRepository();
-                    if (active) {
-                        setRepository(fallback);
-                        setStorageMode("local");
-                        setNotice("Supabase not available right now. Switched to local storage.");
-                    }
-                    return;
-                }
-
                 if (active) {
-                    setNotice("Could not load saved tasks.");
+                    setNotice(repository.mode === "supabase" ? "Could not load tasks from Supabase." : "Could not load saved tasks.");
                 }
             } finally {
                 if (active) {
@@ -134,7 +184,7 @@ export default function Home() {
         return () => {
             active = false;
         };
-    }, [repository]);
+    }, [repository, authReady, isAuthenticated, supabaseAuthEnabled]);
 
     const toggleAssignee = (memberId: string) => {
         setSelectedAssigneeIds((current) =>
@@ -147,7 +197,8 @@ export default function Home() {
             return;
         }
 
-        const newTask = createTaskFromTemplate(selectedTemplate, selectedAssigneeIds, currentMember.name, taskNote);
+        const actorName = profile?.displayName || currentMember.name;
+        const newTask = createTaskFromTemplate(selectedTemplate, selectedAssigneeIds, actorName, taskNote);
         setTasks((current) => [newTask, ...current]);
 
         try {
@@ -186,46 +237,74 @@ export default function Home() {
         }
     };
 
-    const handleRoleChange = (role: Role) => {
-        setActiveRole(role);
-        const roleMembers = members.filter((member) => member.role === role);
-        setActiveMemberId(roleMembers[0]?.id ?? members[0].id);
+    const handleMagicLinkSignIn = async () => {
+        if (!authEmail.trim()) {
+            setNotice("Enter your email to continue.");
+            return;
+        }
+
+        setAuthPending(true);
+        try {
+            await signInWithMagicLink(authEmail.trim());
+            setNotice("Magic link sent. Check your inbox and open the sign-in link.");
+        } catch {
+            setNotice("Could not send magic link. Verify your email auth setup in Supabase.");
+        } finally {
+            setAuthPending(false);
+        }
     };
 
-    const roleMembers = members.filter((member) => member.role === activeRole);
+    const handleSignOut = async () => {
+        setAuthPending(true);
+        try {
+            await signOut();
+            setTasks([]);
+            setNotice("Signed out.");
+        } catch {
+            setNotice("Could not sign out right now.");
+        } finally {
+            setAuthPending(false);
+        }
+    };
 
     return (
         <main className="page-shell">
             <section className="hero-card">
                 <div>
-                    <p className="eyebrow">Feature 1</p>
+                    <p className="eyebrow">Feature 4</p>
                     <h1>Daily cleaning task assignment and completion</h1>
                     <p className="hero-copy">
-                        One admin can assign one or many cleaners today, while the data model stays ready for a future shift to
-                        team-based assignments.
+                        Authenticated users receive role-based task access from Supabase profiles. Cleaners only see and complete
+                        their assigned work.
                     </p>
-                    <div className="role-row">
-                        <label className="field-label" htmlFor="role">
-                            Active role
-                        </label>
-                        <select id="role" value={activeRole} onChange={(event) => handleRoleChange(event.target.value as Role)}>
-                            <option value="admin">Admin</option>
-                            <option value="supervisor">Supervisor</option>
-                            <option value="cleaner">Cleaner</option>
-                        </select>
-                    </div>
-                    <div className="role-row">
-                        <label className="field-label" htmlFor="member">
-                            Signed-in member
-                        </label>
-                        <select id="member" value={activeMemberId} onChange={(event) => setActiveMemberId(event.target.value)}>
-                            {roleMembers.map((member) => (
-                                <option key={member.id} value={member.id}>
-                                    {member.name} · {member.zone}
-                                </option>
-                            ))}
-                        </select>
-                    </div>
+                    {supabaseAuthEnabled && !isAuthenticated ? (
+                        <div className="auth-box">
+                            <label className="field-label" htmlFor="auth-email">
+                                Work email
+                            </label>
+                            <input
+                                id="auth-email"
+                                type="email"
+                                value={authEmail}
+                                onChange={(event) => setAuthEmail(event.target.value)}
+                                placeholder="you@company.com"
+                            />
+                            <button className="primary-button" type="button" onClick={handleMagicLinkSignIn} disabled={authPending}>
+                                {authPending ? "Sending..." : "Send magic link"}
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="auth-summary">
+                            <p className="task-meta">
+                                Signed in as {profile?.displayName || currentMember.name} ({roleLabel(activeRole)})
+                            </p>
+                            {supabaseAuthEnabled ? (
+                                <button className="secondary-button" type="button" onClick={handleSignOut} disabled={authPending}>
+                                    Sign out
+                                </button>
+                            ) : null}
+                        </div>
+                    )}
                     <p className="mode-pill">Storage: {storageMode === "supabase" ? "Supabase" : "Local"}</p>
                     {notice ? <p className="notice-text">{notice}</p> : null}
                 </div>
@@ -262,7 +341,12 @@ export default function Home() {
                     <label className="field-label" htmlFor="template">
                         Task template
                     </label>
-                    <select id="template" value={selectedTemplateId} onChange={(event) => setSelectedTemplateId(event.target.value)}>
+                    <select
+                        id="template"
+                        value={selectedTemplateId}
+                        onChange={(event) => setSelectedTemplateId(event.target.value)}
+                        disabled={!permissions.canCreateTask}
+                    >
                         {templates.map((template) => (
                             <option key={template.id} value={template.id}>
                                 {template.title} · {template.area}
@@ -307,6 +391,7 @@ export default function Home() {
                                 value={taskNote}
                                 onChange={(event) => setTaskNote(event.target.value)}
                                 rows={4}
+                                disabled={!permissions.canCreateTask}
                             />
                         </>
                     ) : null}
@@ -349,6 +434,7 @@ export default function Home() {
 
             <section className="panel-card">
                 <h2>Task board</h2>
+                {!authReady ? <p className="task-meta">Checking session...</p> : null}
                 {loadingTasks ? <p className="task-meta">Loading tasks...</p> : null}
                 <div className="task-list">
                     {visibleTasks.map((task) => (
