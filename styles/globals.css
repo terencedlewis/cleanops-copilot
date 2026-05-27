@@ -293,6 +293,19 @@ input:focus-visible {
     margin-top: 16px;
 }
 
+.filter-grid {
+    display: grid;
+    gap: 10px;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    margin: 12px 0;
+}
+
+.filter-grid input,
+.filter-grid select,
+.filter-grid button {
+    min-height: 40px;
+}
+
 .edit-panel {
     display: grid;
     gap: 14px;
@@ -380,6 +393,10 @@ input:focus-visible {
         grid-template-columns: 1fr;
     }
 
+    .filter-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .edit-form-grid {
         grid-template-columns: 1fr;
     }
@@ -403,6 +420,10 @@ input:focus-visible {
 
     .task-item {
         flex-direction: column;
+    }
+
+    .filter-grid {
+        grid-template-columns: 1fr;
     }
 
     .task-item-actions {

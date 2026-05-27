@@ -48,6 +48,11 @@ export default function Home() {
     const [storageMode, setStorageMode] = useState<RepositoryMode>(repository.mode);
     const [loadingTasks, setLoadingTasks] = useState(true);
     const [notice, setNotice] = useState<string | null>(null);
+    const [searchQuery, setSearchQuery] = useState("");
+    const [statusFilter, setStatusFilter] = useState<"all" | Task["status"]>("all");
+    const [areaFilter, setAreaFilter] = useState<string>("all");
+    const [assigneeFilter, setAssigneeFilter] = useState<string>("all");
+    const [sortBy, setSortBy] = useState<"latest" | "priority" | "status">("latest");
     const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
     const [editTaskTitle, setEditTaskTitle] = useState("");
     const [editTaskArea, setEditTaskArea] = useState("");
@@ -77,13 +82,82 @@ export default function Home() {
         return visibleTasks.filter((task) => task.status === "done");
     }, [visibleTasks]);
 
+    const filterAreas = useMemo(() => {
+        return Array.from(new Set(visibleTasks.map((task) => task.area))).sort();
+    }, [visibleTasks]);
+
+    const filterAssignees = useMemo(() => {
+        const assigneeIds = new Set<string>();
+        visibleTasks.forEach((task) => {
+            task.assigneeIds.forEach((id) => assigneeIds.add(id));
+        });
+
+        return members.filter((member) => assigneeIds.has(member.id));
+    }, [visibleTasks]);
+
+    const filteredTasks = useMemo(() => {
+        const priorityRank: Record<Task["priority"], number> = {
+            high: 3,
+            medium: 2,
+            low: 1
+        };
+
+        const statusRank: Record<Task["status"], number> = {
+            "in-progress": 3,
+            pending: 2,
+            done: 1
+        };
+
+        const normalizedQuery = searchQuery.trim().toLowerCase();
+
+        const base = visibleTasks.filter((task) => {
+            if (statusFilter !== "all" && task.status !== statusFilter) {
+                return false;
+            }
+
+            if (areaFilter !== "all" && task.area !== areaFilter) {
+                return false;
+            }
+
+            if (assigneeFilter !== "all" && !task.assigneeIds.includes(assigneeFilter)) {
+                return false;
+            }
+
+            if (!normalizedQuery) {
+                return true;
+            }
+
+            const assigneeNames = task.assigneeIds
+                .map((id) => members.find((member) => member.id === id)?.name || "")
+                .join(" ")
+                .toLowerCase();
+
+            const searchable = `${task.title} ${task.area} ${task.priority} ${statusLabel(task.status)} ${task.note} ${assigneeNames}`
+                .toLowerCase();
+
+            return searchable.includes(normalizedQuery);
+        });
+
+        return [...base].sort((a, b) => {
+            if (sortBy === "priority") {
+                return priorityRank[b.priority] - priorityRank[a.priority];
+            }
+
+            if (sortBy === "status") {
+                return statusRank[b.status] - statusRank[a.status];
+            }
+
+            return Date.parse(b.assignedAt) - Date.parse(a.assignedAt);
+        });
+    }, [visibleTasks, statusFilter, areaFilter, assigneeFilter, searchQuery, sortBy]);
+
     const selectedTask = useMemo(() => {
         if (!selectedTaskId) {
             return null;
         }
 
-        return visibleTasks.find((task) => task.id === selectedTaskId) ?? null;
-    }, [selectedTaskId, visibleTasks]);
+        return filteredTasks.find((task) => task.id === selectedTaskId) ?? visibleTasks.find((task) => task.id === selectedTaskId) ?? null;
+    }, [selectedTaskId, filteredTasks, visibleTasks]);
 
     useEffect(() => {
         if (!canEditTasks) {
@@ -91,15 +165,15 @@ export default function Home() {
             return;
         }
 
-        if (visibleTasks.length === 0) {
+        if (filteredTasks.length === 0) {
             setSelectedTaskId(null);
             return;
         }
 
-        if (!selectedTaskId || !visibleTasks.some((task) => task.id === selectedTaskId)) {
-            setSelectedTaskId(visibleTasks[0].id);
+        if (!selectedTaskId || !filteredTasks.some((task) => task.id === selectedTaskId)) {
+            setSelectedTaskId(filteredTasks[0].id);
         }
-    }, [visibleTasks, selectedTaskId, canEditTasks]);
+    }, [filteredTasks, selectedTaskId, canEditTasks]);
 
     useEffect(() => {
         if (!selectedTask) {
@@ -313,6 +387,14 @@ export default function Home() {
         } finally {
             setAuthPending(false);
         }
+    };
+
+    const clearFilters = () => {
+        setSearchQuery("");
+        setStatusFilter("all");
+        setAreaFilter("all");
+        setAssigneeFilter("all");
+        setSortBy("latest");
     };
 
     const selectTaskForEditing = (taskId: string) => {
@@ -637,8 +719,47 @@ export default function Home() {
                 ) : (
                     <p className="task-meta">Cleaner role is limited to viewing and completing assigned tasks.</p>
                 )}
+                <div className="filter-grid">
+                    <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(event) => setSearchQuery(event.target.value)}
+                        placeholder="Search title, note, area, assignee"
+                    />
+                    <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as "all" | Task["status"])}>
+                        <option value="all">All statuses</option>
+                        <option value="pending">Pending</option>
+                        <option value="in-progress">In progress</option>
+                        <option value="done">Done</option>
+                    </select>
+                    <select value={areaFilter} onChange={(event) => setAreaFilter(event.target.value)}>
+                        <option value="all">All areas</option>
+                        {filterAreas.map((area) => (
+                            <option key={area} value={area}>
+                                {area}
+                            </option>
+                        ))}
+                    </select>
+                    <select value={assigneeFilter} onChange={(event) => setAssigneeFilter(event.target.value)}>
+                        <option value="all">All assignees</option>
+                        {filterAssignees.map((member) => (
+                            <option key={member.id} value={member.id}>
+                                {member.name}
+                            </option>
+                        ))}
+                    </select>
+                    <select value={sortBy} onChange={(event) => setSortBy(event.target.value as "latest" | "priority" | "status")}>
+                        <option value="latest">Sort: Latest</option>
+                        <option value="priority">Sort: Priority</option>
+                        <option value="status">Sort: Status</option>
+                    </select>
+                    <button className="secondary-button" type="button" onClick={clearFilters}>
+                        Clear filters
+                    </button>
+                </div>
+                <p className="task-meta">Showing {filteredTasks.length} of {visibleTasks.length} tasks</p>
                 <div className="task-list">
-                    {visibleTasks.map((task) => (
+                    {filteredTasks.map((task) => (
                         <article className="task-item" key={task.id}>
                             <div>
                                 <p className="task-title">{task.title}</p>
@@ -672,6 +793,7 @@ export default function Home() {
                             </div>
                         </article>
                     ))}
+                    {filteredTasks.length === 0 ? <p className="task-meta">No tasks match your current filters.</p> : null}
                 </div>
             </section>
         </main>
