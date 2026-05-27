@@ -144,6 +144,14 @@ h1 {
     margin: 16px 0;
 }
 
+.role-row {
+    margin-bottom: 10px;
+}
+
+.role-row .field-label {
+    margin-top: 0;
+}
+
 .field-label {
     display: inline-block;
     margin: 12px 0 8px;
