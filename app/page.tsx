@@ -1,31 +1,35 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+    createSeedTasks,
     createTaskFromTemplate,
     members,
     statusLabel,
     templates,
     type Task
 } from "../lib/task-model";
+import {
+    createFallbackTaskRepository,
+    createTaskRepository,
+    type RepositoryMode,
+    type TaskRepository
+} from "../services/task-repository";
 
 const defaultTemplateId = templates[0]?.id ?? "";
 const defaultAssigneeId = members.find((member) => member.role === "cleaner")?.id ?? "";
 
 export default function Home() {
+    const [repository, setRepository] = useState<TaskRepository>(() => createTaskRepository());
     const [selectedTemplateId, setSelectedTemplateId] = useState(defaultTemplateId);
     const [selectedAssigneeIds, setSelectedAssigneeIds] = useState<string[]>(
         defaultAssigneeId ? [defaultAssigneeId] : []
     );
     const [taskNote, setTaskNote] = useState("Handle before 10:00 AM and attach a photo if the area needs rework.");
-    const [tasks, setTasks] = useState<Task[]>([
-        createTaskFromTemplate(templates[0], ["u3"], "Maya", "Start with front desk and main entry mat."),
-        {
-            ...createTaskFromTemplate(templates[1], ["u5"], "Omar", "Check paper and soap levels."),
-            status: "done",
-            completedAt: new Date().toISOString()
-        }
-    ]);
+    const [tasks, setTasks] = useState<Task[]>([]);
+    const [storageMode, setStorageMode] = useState<RepositoryMode>(repository.mode);
+    const [loadingTasks, setLoadingTasks] = useState(true);
+    const [notice, setNotice] = useState<string | null>(null);
 
     const selectedTemplate = templates.find((template) => template.id === selectedTemplateId) ?? templates[0];
 
@@ -37,29 +41,102 @@ export default function Home() {
         return tasks.filter((task) => task.status === "done");
     }, [tasks]);
 
+    useEffect(() => {
+        let active = true;
+
+        const loadTasks = async () => {
+            setLoadingTasks(true);
+
+            try {
+                const savedTasks = await repository.listTasks();
+
+                if (savedTasks.length === 0) {
+                    const seedTasks = createSeedTasks();
+                    await Promise.all(seedTasks.map((task) => repository.saveTask(task)));
+
+                    if (active) {
+                        setTasks(seedTasks);
+                    }
+                } else if (active) {
+                    setTasks(savedTasks);
+                }
+
+                if (active) {
+                    setStorageMode(repository.mode);
+                    setNotice(repository.mode === "supabase" ? "Connected to Supabase storage." : "Using browser local storage.");
+                }
+            } catch {
+                if (repository.mode === "supabase") {
+                    const fallback = createFallbackTaskRepository();
+                    if (active) {
+                        setRepository(fallback);
+                        setStorageMode("local");
+                        setNotice("Supabase not available right now. Switched to local storage.");
+                    }
+                    return;
+                }
+
+                if (active) {
+                    setNotice("Could not load saved tasks.");
+                }
+            } finally {
+                if (active) {
+                    setLoadingTasks(false);
+                }
+            }
+        };
+
+        void loadTasks();
+
+        return () => {
+            active = false;
+        };
+    }, [repository]);
+
     const toggleAssignee = (memberId: string) => {
         setSelectedAssigneeIds((current) =>
             current.includes(memberId) ? current.filter((id) => id !== memberId) : [...current, memberId]
         );
     };
 
-    const handleCreateTask = () => {
+    const handleCreateTask = async () => {
         if (!selectedTemplate) {
             return;
         }
 
         const newTask = createTaskFromTemplate(selectedTemplate, selectedAssigneeIds, "Maya", taskNote);
         setTasks((current) => [newTask, ...current]);
+
+        try {
+            await repository.saveTask(newTask);
+        } catch {
+            setNotice("Task created in UI, but save failed. Check storage connection.");
+        }
     };
 
-    const markComplete = (taskId: string) => {
+    const markComplete = async (taskId: string) => {
+        let updatedTask: Task | null = null;
+
         setTasks((current) =>
-            current.map((task) =>
-                task.id === taskId
-                    ? { ...task, status: "done", completedAt: new Date().toISOString() }
-                    : task
-            )
+            current.map((task) => {
+                if (task.id !== taskId) {
+                    return task;
+                }
+
+                updatedTask = { ...task, status: "done", completedAt: new Date().toISOString() };
+                return updatedTask;
+            })
         );
+
+        if (!updatedTask) {
+            return;
+        }
+
+        try {
+            await repository.saveTask(updatedTask);
+        } catch {
+            setNotice("Status updated in UI, but save failed. Check storage connection.");
+        }
     };
 
     return (
@@ -72,6 +149,8 @@ export default function Home() {
                         One admin can assign one or many cleaners today, while the data model stays ready for a future shift to
                         team-based assignments.
                     </p>
+                    <p className="mode-pill">Storage: {storageMode === "supabase" ? "Supabase" : "Local"}</p>
+                    {notice ? <p className="notice-text">{notice}</p> : null}
                 </div>
 
                 <div className="hero-stats">
@@ -177,6 +256,7 @@ export default function Home() {
 
             <section className="panel-card">
                 <h2>Task board</h2>
+                {loadingTasks ? <p className="task-meta">Loading tasks...</p> : null}
                 <div className="task-list">
                     {tasks.map((task) => (
                         <article className="task-item" key={task.id}>

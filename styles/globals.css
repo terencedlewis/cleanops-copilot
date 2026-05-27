@@ -92,6 +92,22 @@ h1 {
     line-height: 1.6;
 }
 
+.mode-pill {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 8px 12px;
+    border: 1px solid rgba(47, 111, 78, 0.25);
+    background: rgba(47, 111, 78, 0.1);
+    font-size: 0.85rem;
+    margin-bottom: 8px;
+}
+
+.notice-text {
+    color: var(--muted);
+    margin-bottom: 0;
+}
+
 .hero-stats {
     display: grid;
     gap: 12px;
