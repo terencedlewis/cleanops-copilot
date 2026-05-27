@@ -19,6 +19,9 @@ build/
 # testing
 coverage/
 
+# typescript
+*.tsbuildinfo
+
 # vscode
 .vscode/*.code-workspace
 

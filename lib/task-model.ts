@@ -43,6 +43,17 @@ export const templates: TaskTemplate[] = [
     { id: "t3", title: "Vacuum main corridor", area: "Floors", defaultPriority: "medium" }
 ];
 
+export function createSeedTasks(): Task[] {
+    return [
+        createTaskFromTemplate(templates[0], ["u3"], "Maya", "Start with front desk and main entry mat."),
+        {
+            ...createTaskFromTemplate(templates[1], ["u5"], "Omar", "Check paper and soap levels."),
+            status: "done",
+            completedAt: new Date().toISOString()
+        }
+    ];
+}
+
 export function createTaskFromTemplate(template: TaskTemplate, assigneeIds: string[], createdBy: string, note = ""): Task {
     const now = new Date().toISOString();
 
