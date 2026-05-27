@@ -1,12 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { getRolePermissions, roleLabel } from "../lib/access-control";
 import {
     createSeedTasks,
     createTaskFromTemplate,
     members,
     statusLabel,
     templates,
+    type Role,
     type Task
 } from "../lib/task-model";
 import {
@@ -18,9 +20,13 @@ import {
 
 const defaultTemplateId = templates[0]?.id ?? "";
 const defaultAssigneeId = members.find((member) => member.role === "cleaner")?.id ?? "";
+const ROLE_KEY = "cleanops.activeRole.v1";
+const MEMBER_KEY = "cleanops.activeMemberId.v1";
 
 export default function Home() {
     const [repository, setRepository] = useState<TaskRepository>(() => createTaskRepository());
+    const [activeRole, setActiveRole] = useState<Role>("admin");
+    const [activeMemberId, setActiveMemberId] = useState("u1");
     const [selectedTemplateId, setSelectedTemplateId] = useState(defaultTemplateId);
     const [selectedAssigneeIds, setSelectedAssigneeIds] = useState<string[]>(
         defaultAssigneeId ? [defaultAssigneeId] : []
@@ -31,15 +37,52 @@ export default function Home() {
     const [loadingTasks, setLoadingTasks] = useState(true);
     const [notice, setNotice] = useState<string | null>(null);
 
+    const permissions = useMemo(() => getRolePermissions(activeRole), [activeRole]);
+    const currentMember = useMemo(() => members.find((member) => member.id === activeMemberId) ?? members[0], [activeMemberId]);
+
+    const visibleTasks = useMemo(
+        () => tasks.filter((task) => permissions.canViewTask(task, currentMember.id)),
+        [tasks, permissions, currentMember.id]
+    );
+
     const selectedTemplate = templates.find((template) => template.id === selectedTemplateId) ?? templates[0];
 
     const activeTasks = useMemo(() => {
-        return tasks.filter((task) => task.status !== "done");
-    }, [tasks]);
+        return visibleTasks.filter((task) => task.status !== "done");
+    }, [visibleTasks]);
 
     const doneTasks = useMemo(() => {
-        return tasks.filter((task) => task.status === "done");
-    }, [tasks]);
+        return visibleTasks.filter((task) => task.status === "done");
+    }, [visibleTasks]);
+
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return;
+        }
+
+        const savedRole = window.localStorage.getItem(ROLE_KEY) as Role | null;
+        const savedMemberId = window.localStorage.getItem(MEMBER_KEY);
+
+        if (savedRole && ["admin", "supervisor", "cleaner"].includes(savedRole)) {
+            setActiveRole(savedRole);
+            const roleMembers = members.filter((member) => member.role === savedRole);
+            const fallbackMember = roleMembers[0]?.id ?? "u1";
+            setActiveMemberId(savedMemberId && roleMembers.some((member) => member.id === savedMemberId) ? savedMemberId : fallbackMember);
+            return;
+        }
+
+        setActiveRole("admin");
+        setActiveMemberId("u1");
+    }, []);
+
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return;
+        }
+
+        window.localStorage.setItem(ROLE_KEY, activeRole);
+        window.localStorage.setItem(MEMBER_KEY, activeMemberId);
+    }, [activeRole, activeMemberId]);
 
     useEffect(() => {
         let active = true;
@@ -100,11 +143,11 @@ export default function Home() {
     };
 
     const handleCreateTask = async () => {
-        if (!selectedTemplate) {
+        if (!selectedTemplate || !permissions.canCreateTask) {
             return;
         }
 
-        const newTask = createTaskFromTemplate(selectedTemplate, selectedAssigneeIds, "Maya", taskNote);
+        const newTask = createTaskFromTemplate(selectedTemplate, selectedAssigneeIds, currentMember.name, taskNote);
         setTasks((current) => [newTask, ...current]);
 
         try {
@@ -120,6 +163,10 @@ export default function Home() {
         setTasks((current) =>
             current.map((task) => {
                 if (task.id !== taskId) {
+                    return task;
+                }
+
+                if (!permissions.canCompleteTask(task, currentMember.id)) {
                     return task;
                 }
 
@@ -139,6 +186,14 @@ export default function Home() {
         }
     };
 
+    const handleRoleChange = (role: Role) => {
+        setActiveRole(role);
+        const roleMembers = members.filter((member) => member.role === role);
+        setActiveMemberId(roleMembers[0]?.id ?? members[0].id);
+    };
+
+    const roleMembers = members.filter((member) => member.role === activeRole);
+
     return (
         <main className="page-shell">
             <section className="hero-card">
@@ -149,14 +204,36 @@ export default function Home() {
                         One admin can assign one or many cleaners today, while the data model stays ready for a future shift to
                         team-based assignments.
                     </p>
+                    <div className="role-row">
+                        <label className="field-label" htmlFor="role">
+                            Active role
+                        </label>
+                        <select id="role" value={activeRole} onChange={(event) => handleRoleChange(event.target.value as Role)}>
+                            <option value="admin">Admin</option>
+                            <option value="supervisor">Supervisor</option>
+                            <option value="cleaner">Cleaner</option>
+                        </select>
+                    </div>
+                    <div className="role-row">
+                        <label className="field-label" htmlFor="member">
+                            Signed-in member
+                        </label>
+                        <select id="member" value={activeMemberId} onChange={(event) => setActiveMemberId(event.target.value)}>
+                            {roleMembers.map((member) => (
+                                <option key={member.id} value={member.id}>
+                                    {member.name} · {member.zone}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
                     <p className="mode-pill">Storage: {storageMode === "supabase" ? "Supabase" : "Local"}</p>
                     {notice ? <p className="notice-text">{notice}</p> : null}
                 </div>
 
                 <div className="hero-stats">
                     <article>
-                        <strong>{tasks.length}</strong>
-                        <span>Total tasks</span>
+                        <strong>{visibleTasks.length}</strong>
+                        <span>Visible tasks</span>
                     </article>
                     <article>
                         <strong>{activeTasks.length}</strong>
@@ -172,7 +249,15 @@ export default function Home() {
             <section className="layout-grid">
                 <article className="panel-card">
                     <h2>Create task</h2>
-                    <p className="panel-copy">Choose a template, pick one or many assignees, and create the daily job.</p>
+                    <p className="panel-copy">
+                        {permissions.canCreateTask
+                            ? "Choose a template, pick one or many assignees, and create the daily job."
+                            : "Cleaners can view and complete assigned tasks but cannot create new assignments."}
+                    </p>
+
+                    <p className="task-meta">
+                        Current identity: {currentMember.name} ({roleLabel(activeRole)})
+                    </p>
 
                     <label className="field-label" htmlFor="template">
                         Task template
@@ -185,44 +270,52 @@ export default function Home() {
                         ))}
                     </select>
 
-                    <div className="field-group">
-                        <span className="field-label">Assign to cleaner(s)</span>
-                        <div className="member-grid">
-                            {members
-                                .filter((member) => member.role === "cleaner")
-                                .map((member) => {
-                                    const checked = selectedAssigneeIds.includes(member.id);
+                    {permissions.canAssignTask ? (
+                        <div className="field-group">
+                            <span className="field-label">Assign to cleaner(s)</span>
+                            <div className="member-grid">
+                                {members
+                                    .filter((member) => member.role === "cleaner")
+                                    .map((member) => {
+                                        const checked = selectedAssigneeIds.includes(member.id);
 
-                                    return (
-                                        <label className={`member-chip ${checked ? "member-chip-active" : ""}`} key={member.id}>
-                                            <input
-                                                type="checkbox"
-                                                checked={checked}
-                                                onChange={() => toggleAssignee(member.id)}
-                                            />
-                                            <span>
-                                                {member.name}
-                                                <small>{member.zone}</small>
-                                            </span>
-                                        </label>
-                                    );
-                                })}
+                                        return (
+                                            <label className={`member-chip ${checked ? "member-chip-active" : ""}`} key={member.id}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={checked}
+                                                    onChange={() => toggleAssignee(member.id)}
+                                                />
+                                                <span>
+                                                    {member.name}
+                                                    <small>{member.zone}</small>
+                                                </span>
+                                            </label>
+                                        );
+                                    })}
+                            </div>
                         </div>
-                    </div>
+                    ) : null}
 
-                    <label className="field-label" htmlFor="note">
-                        Completion note
-                    </label>
-                    <textarea
-                        id="note"
-                        value={taskNote}
-                        onChange={(event) => setTaskNote(event.target.value)}
-                        rows={4}
-                    />
+                    {permissions.canCreateTask ? (
+                        <>
+                            <label className="field-label" htmlFor="note">
+                                Completion note
+                            </label>
+                            <textarea
+                                id="note"
+                                value={taskNote}
+                                onChange={(event) => setTaskNote(event.target.value)}
+                                rows={4}
+                            />
+                        </>
+                    ) : null}
 
-                    <button className="primary-button" type="button" onClick={handleCreateTask}>
-                        Create assignment
-                    </button>
+                    {permissions.canCreateTask ? (
+                        <button className="primary-button" type="button" onClick={handleCreateTask}>
+                            Create assignment
+                        </button>
+                    ) : null}
                 </article>
 
                 <article className="panel-card">
@@ -258,7 +351,7 @@ export default function Home() {
                 <h2>Task board</h2>
                 {loadingTasks ? <p className="task-meta">Loading tasks...</p> : null}
                 <div className="task-list">
-                    {tasks.map((task) => (
+                    {visibleTasks.map((task) => (
                         <article className="task-item" key={task.id}>
                             <div>
                                 <p className="task-title">{task.title}</p>
@@ -273,10 +366,12 @@ export default function Home() {
                                 {task.note ? <p className="task-note">{task.note}</p> : null}
                             </div>
 
-                            {task.status !== "done" ? (
+                            {task.status !== "done" && permissions.canCompleteTask(task, currentMember.id) ? (
                                 <button className="secondary-button" type="button" onClick={() => markComplete(task.id)}>
                                     Mark done
                                 </button>
+                            ) : task.status !== "done" ? (
+                                <span className="task-meta">No permission</span>
                             ) : (
                                 <span className="done-pill">Completed</span>
                             )}
