@@ -48,9 +48,19 @@ export default function Home() {
     const [storageMode, setStorageMode] = useState<RepositoryMode>(repository.mode);
     const [loadingTasks, setLoadingTasks] = useState(true);
     const [notice, setNotice] = useState<string | null>(null);
+    const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+    const [editTaskTitle, setEditTaskTitle] = useState("");
+    const [editTaskArea, setEditTaskArea] = useState("");
+    const [editTaskPriority, setEditTaskPriority] = useState<Task["priority"]>("medium");
+    const [editTaskStatus, setEditTaskStatus] = useState<Task["status"]>("pending");
+    const [editTaskNote, setEditTaskNote] = useState("");
+    const [editTaskAssigneeIds, setEditTaskAssigneeIds] = useState<string[]>([]);
+    const [editTaskSaving, setEditTaskSaving] = useState(false);
+    const [editTaskNotice, setEditTaskNotice] = useState<string | null>(null);
 
     const permissions = useMemo(() => getRolePermissions(activeRole), [activeRole]);
     const currentMember = useMemo(() => members.find((member) => member.id === activeMemberId) ?? members[0], [activeMemberId]);
+    const canEditTasks = activeRole !== "cleaner";
 
     const visibleTasks = useMemo(
         () => tasks.filter((task) => permissions.canViewTask(task, currentMember.id)),
@@ -66,6 +76,44 @@ export default function Home() {
     const doneTasks = useMemo(() => {
         return visibleTasks.filter((task) => task.status === "done");
     }, [visibleTasks]);
+
+    const selectedTask = useMemo(() => {
+        if (!selectedTaskId) {
+            return null;
+        }
+
+        return visibleTasks.find((task) => task.id === selectedTaskId) ?? null;
+    }, [selectedTaskId, visibleTasks]);
+
+    useEffect(() => {
+        if (!canEditTasks) {
+            setSelectedTaskId(null);
+            return;
+        }
+
+        if (visibleTasks.length === 0) {
+            setSelectedTaskId(null);
+            return;
+        }
+
+        if (!selectedTaskId || !visibleTasks.some((task) => task.id === selectedTaskId)) {
+            setSelectedTaskId(visibleTasks[0].id);
+        }
+    }, [visibleTasks, selectedTaskId, canEditTasks]);
+
+    useEffect(() => {
+        if (!selectedTask) {
+            return;
+        }
+
+        setEditTaskTitle(selectedTask.title);
+        setEditTaskArea(selectedTask.area);
+        setEditTaskPriority(selectedTask.priority);
+        setEditTaskStatus(selectedTask.status);
+        setEditTaskNote(selectedTask.note);
+        setEditTaskAssigneeIds(selectedTask.assigneeIds);
+        setEditTaskNotice(null);
+    }, [selectedTask]);
 
     useEffect(() => {
         if (!supabaseAuthEnabled) {
@@ -267,6 +315,71 @@ export default function Home() {
         }
     };
 
+    const selectTaskForEditing = (taskId: string) => {
+        setSelectedTaskId(taskId);
+        setEditTaskNotice(null);
+    };
+
+    const toggleEditAssignee = (memberId: string) => {
+        setEditTaskAssigneeIds((current) =>
+            current.includes(memberId) ? current.filter((id) => id !== memberId) : [...current, memberId]
+        );
+    };
+
+    const resetSelectedTaskForm = () => {
+        if (!selectedTask) {
+            return;
+        }
+
+        setEditTaskTitle(selectedTask.title);
+        setEditTaskArea(selectedTask.area);
+        setEditTaskPriority(selectedTask.priority);
+        setEditTaskStatus(selectedTask.status);
+        setEditTaskNote(selectedTask.note);
+        setEditTaskAssigneeIds(selectedTask.assigneeIds);
+        setEditTaskNotice("Form reset.");
+    };
+
+    const handleSaveTaskEdits = async () => {
+        if (!selectedTask) {
+            setEditTaskNotice("Select a task first.");
+            return;
+        }
+
+        if (!permissions.canEditTask(selectedTask, currentMember.id)) {
+            setEditTaskNotice("You do not have permission to edit this task.");
+            return;
+        }
+
+        if (!editTaskTitle.trim() || !editTaskArea.trim()) {
+            setEditTaskNotice("Title and area are required.");
+            return;
+        }
+
+        const updatedTask: Task = {
+            ...selectedTask,
+            title: editTaskTitle.trim(),
+            area: editTaskArea.trim(),
+            priority: editTaskPriority,
+            status: editTaskStatus,
+            note: editTaskNote.trim(),
+            assigneeIds: editTaskAssigneeIds,
+            completedAt: editTaskStatus === "done" ? selectedTask.completedAt ?? new Date().toISOString() : null
+        };
+
+        setEditTaskSaving(true);
+        setTasks((current) => current.map((task) => (task.id === updatedTask.id ? updatedTask : task)));
+
+        try {
+            await repository.saveTask(updatedTask);
+            setEditTaskNotice("Task updated successfully.");
+        } catch {
+            setEditTaskNotice("Task updated in the UI, but save failed. Check storage connection.");
+        } finally {
+            setEditTaskSaving(false);
+        }
+    };
+
     return (
         <main className="page-shell">
             <section className="hero-card">
@@ -436,6 +549,94 @@ export default function Home() {
                 <h2>Task board</h2>
                 {!authReady ? <p className="task-meta">Checking session...</p> : null}
                 {loadingTasks ? <p className="task-meta">Loading tasks...</p> : null}
+                {canEditTasks ? (
+                    <div className="edit-panel">
+                        <div className="edit-panel-header">
+                            <div>
+                                <p className="field-label">Task editor</p>
+                                <p className="task-meta">Select a task to update its title, area, status, and assignments.</p>
+                            </div>
+                            {selectedTask ? <span className="mode-pill">Editing: {selectedTask.title}</span> : null}
+                        </div>
+
+                        {selectedTask ? (
+                            <div className="edit-form-grid">
+                                <label className="field-label edit-span-two">
+                                    Title
+                                    <input value={editTaskTitle} onChange={(event) => setEditTaskTitle(event.target.value)} />
+                                </label>
+
+                                <label className="field-label edit-span-two">
+                                    Area
+                                    <input value={editTaskArea} onChange={(event) => setEditTaskArea(event.target.value)} />
+                                </label>
+
+                                <label className="field-label">
+                                    Priority
+                                    <select value={editTaskPriority} onChange={(event) => setEditTaskPriority(event.target.value as Task["priority"])}>
+                                        <option value="high">High</option>
+                                        <option value="medium">Medium</option>
+                                        <option value="low">Low</option>
+                                    </select>
+                                </label>
+
+                                <label className="field-label">
+                                    Status
+                                    <select value={editTaskStatus} onChange={(event) => setEditTaskStatus(event.target.value as Task["status"])}>
+                                        <option value="pending">Pending</option>
+                                        <option value="in-progress">In progress</option>
+                                        <option value="done">Done</option>
+                                    </select>
+                                </label>
+
+                                <label className="field-label edit-span-two">
+                                    Note
+                                    <textarea value={editTaskNote} onChange={(event) => setEditTaskNote(event.target.value)} rows={3} />
+                                </label>
+
+                                <div className="field-group edit-span-two">
+                                    <span className="field-label">Reassign cleaners</span>
+                                    <div className="member-grid">
+                                        {members
+                                            .filter((member) => member.role === "cleaner")
+                                            .map((member) => {
+                                                const checked = editTaskAssigneeIds.includes(member.id);
+
+                                                return (
+                                                    <label className={`member-chip ${checked ? "member-chip-active" : ""}`} key={member.id}>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={checked}
+                                                            onChange={() => toggleEditAssignee(member.id)}
+                                                        />
+                                                        <span>
+                                                            {member.name}
+                                                            <small>{member.zone}</small>
+                                                        </span>
+                                                    </label>
+                                                );
+                                            })}
+                                    </div>
+                                </div>
+
+                                <div className="edit-actions edit-span-two">
+                                    <button className="primary-button" type="button" onClick={handleSaveTaskEdits} disabled={editTaskSaving}>
+                                        {editTaskSaving ? "Saving..." : "Save changes"}
+                                    </button>
+                                    <button className="secondary-button" type="button" onClick={resetSelectedTaskForm} disabled={editTaskSaving}>
+                                        Reset
+                                    </button>
+                                </div>
+
+                                {editTaskNotice ? <p className="notice-text edit-span-two">{editTaskNotice}</p> : null}
+                            </div>
+                        ) : (
+                            <p className="task-meta">No task selected for editing yet.</p>
+                        )}
+                    </div>
+                ) : (
+                    <p className="task-meta">Cleaner role is limited to viewing and completing assigned tasks.</p>
+                )}
                 <div className="task-list">
                     {visibleTasks.map((task) => (
                         <article className="task-item" key={task.id}>
@@ -452,15 +653,23 @@ export default function Home() {
                                 {task.note ? <p className="task-note">{task.note}</p> : null}
                             </div>
 
-                            {task.status !== "done" && permissions.canCompleteTask(task, currentMember.id) ? (
-                                <button className="secondary-button" type="button" onClick={() => markComplete(task.id)}>
-                                    Mark done
-                                </button>
-                            ) : task.status !== "done" ? (
-                                <span className="task-meta">No permission</span>
-                            ) : (
-                                <span className="done-pill">Completed</span>
-                            )}
+                            <div className="task-item-actions">
+                                {permissions.canEditTask(task, currentMember.id) ? (
+                                    <button className="secondary-button" type="button" onClick={() => selectTaskForEditing(task.id)}>
+                                        Edit task
+                                    </button>
+                                ) : null}
+
+                                {task.status !== "done" && permissions.canCompleteTask(task, currentMember.id) ? (
+                                    <button className="secondary-button" type="button" onClick={() => markComplete(task.id)}>
+                                        Mark done
+                                    </button>
+                                ) : task.status !== "done" ? (
+                                    <span className="task-meta">No permission</span>
+                                ) : (
+                                    <span className="done-pill">Completed</span>
+                                )}
+                            </div>
                         </article>
                     ))}
                 </div>

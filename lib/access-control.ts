@@ -3,6 +3,7 @@ import type { Role, Task } from "./task-model";
 export type RolePermissions = {
     canCreateTask: boolean;
     canAssignTask: boolean;
+    canEditTask: (task: Task, activeMemberId: string) => boolean;
     canCompleteTask: (task: Task, activeMemberId: string) => boolean;
     canViewTask: (task: Task, activeMemberId: string) => boolean;
 };
@@ -12,6 +13,7 @@ export function getRolePermissions(role: Role): RolePermissions {
         return {
             canCreateTask: false,
             canAssignTask: false,
+            canEditTask: () => false,
             canCompleteTask: (task, activeMemberId) => task.assigneeIds.includes(activeMemberId),
             canViewTask: (task, activeMemberId) => task.assigneeIds.includes(activeMemberId)
         };
@@ -20,6 +22,7 @@ export function getRolePermissions(role: Role): RolePermissions {
     return {
         canCreateTask: true,
         canAssignTask: true,
+        canEditTask: () => true,
         canCompleteTask: () => true,
         canViewTask: () => true
     };
